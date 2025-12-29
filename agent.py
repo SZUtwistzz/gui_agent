@@ -1,4 +1,4 @@
-"""Agent 核心类 - 任务执行循环"""
+"""Agent 核心类 - 任务执行循环（支持多模态）"""
 
 import json
 import logging
@@ -6,18 +6,18 @@ import re
 from typing import Optional, List, Dict, Any
 try:
     from .browser import Browser
-    from .llm import BaseLLM, Message
+    from .llm import BaseLLM, Message, TextContent, ImageContent
     from .tools import Tools, ActionResult
 except ImportError:
     from browser import Browser
-    from llm import BaseLLM, Message
+    from llm import BaseLLM, Message, TextContent, ImageContent
     from tools import Tools, ActionResult
 
 logger = logging.getLogger(__name__)
 
 
 class Agent:
-    """简化的 Agent 类"""
+    """简化的 Agent 类 - 支持多模态视觉"""
     
     def __init__(
         self,
@@ -25,6 +25,9 @@ class Agent:
         llm: BaseLLM,
         browser: Optional[Browser] = None,
         max_steps: int = 500,
+        use_vision: bool = True,  # 是否使用视觉能力
+        use_dom_pruning: bool = True,  # 是否使用 DOM 剪枝
+        max_elements: int = 40,  # 最大元素数量
     ):
         """
         初始化 Agent
@@ -34,6 +37,9 @@ class Agent:
             llm: LLM 实例
             browser: 浏览器实例（可选，会自动创建）
             max_steps: 最大执行步数
+            use_vision: 是否使用视觉能力（需要 LLM 支持）
+            use_dom_pruning: 是否使用 DOM 剪枝
+            max_elements: 剪枝后最大保留元素数量
         """
         self.task = task
         self.llm = llm
@@ -43,12 +49,25 @@ class Agent:
         self.history: List[Dict[str, Any]] = []
         self.current_step = 0
         
+        # 多模态配置
+        self.use_vision = use_vision and getattr(llm, 'supports_vision', False)
+        self.use_dom_pruning = use_dom_pruning
+        self.max_elements = max_elements
+        
+        if self.use_vision:
+            logger.info("✨ 多模态视觉模式已启用")
+        else:
+            logger.info("📝 纯文本模式（LLM 不支持视觉或已禁用）")
+        
+        if self.use_dom_pruning:
+            logger.info(f"🌳 DOM 剪枝已启用（最多 {max_elements} 个元素）")
+        
         # 任务进度跟踪
         self.completed_items: List[str] = []  # 已完成的项目
         self.selected_parts: Dict[str, Dict[str, Any]] = {}  # 已选择的配件 {类型: {名称, 价格}}
         
     async def run(self) -> Dict[str, Any]:
-        """执行任务（同步版本，用于直接调用）"""
+        """执行任务（支持多模态）"""
         await self.browser.start()
         
         try:
@@ -56,8 +75,15 @@ class Agent:
             system_prompt = self._build_system_prompt()
             messages: List[Message] = [
                 Message(role="system", content=system_prompt),
-                Message(role="user", content=f"任务: {self.task}\n\n请开始执行任务。")
             ]
+            
+            # 获取初始页面状态并创建第一条用户消息
+            initial_state = await self._get_page_state()
+            initial_message = await self._create_user_message(
+                f"任务: {self.task}\n\n请开始执行任务。",
+                initial_state
+            )
+            messages.append(initial_message)
             
             # 执行循环
             for step in range(self.max_steps):
@@ -139,9 +165,11 @@ class Agent:
                         # 构建任务完成检查提示
                         completion_check = self._build_completion_check_prompt()
                         
-                        messages.append(Message(
-                            role="user",
-                            content=f"""操作成功: {result.content}
+                        # 获取新的页面状态
+                        new_state = await self._get_page_state()
+                        
+                        # 构建反馈消息
+                        feedback_text = f"""操作成功: {result.content}
 {page_info}
 
 {progress_info}{step_reminder}
@@ -152,7 +180,10 @@ class Agent:
 - 只有当所有任务目标都已达成时，才能调用 done()
 - 调用 done() 必须提供详细的结果总结
 - 不要重复已完成的操作！"""
-                        ))
+                        
+                        # 创建多模态消息
+                        user_message = await self._create_user_message(feedback_text, new_state)
+                        messages.append(user_message)
             
             return {
                 "success": True,
@@ -171,6 +202,55 @@ class Agent:
             # 不自动关闭浏览器，让用户查看结果
             # await self.browser.close()
             pass
+    
+    async def _get_page_state(self) -> Dict[str, Any]:
+        """获取当前页面状态（用于多模态）"""
+        if self.use_dom_pruning:
+            # 使用剪枝后的 DOM 和截图
+            state = await self.browser.get_compact_state(
+                include_screenshot=self.use_vision,
+                screenshot_quality=50,  # 中等质量
+                max_elements=self.max_elements
+            )
+        else:
+            # 传统方式
+            state = {
+                "url": await self.browser.get_url(),
+                "title": await self.browser.get_title(),
+                "elements": await self.browser.get_elements_info(),
+                "screenshot": None
+            }
+            if self.use_vision:
+                state["screenshot"] = await self.browser.screenshot()
+        
+        return state
+    
+    async def _create_user_message(self, text: str, page_state: Dict[str, Any]) -> Message:
+        """创建用户消息（支持多模态）"""
+        # 构建页面状态文本
+        elements = page_state.get("elements", [])
+        
+        if self.use_dom_pruning and elements:
+            # 格式化元素列表
+            elements_text = self.browser.format_elements_for_llm(elements, max_chars=2500)
+            full_text = f"{text}\n\n{elements_text}"
+        else:
+            full_text = text
+        
+        # 检查是否使用视觉
+        screenshot = page_state.get("screenshot") if self.use_vision else None
+        
+        if screenshot and self.use_vision:
+            # 创建多模态消息
+            return Message.create_multimodal(
+                role="user",
+                text=full_text,
+                image_data=screenshot,
+                media_type="image/jpeg"
+            )
+        else:
+            # 纯文本消息
+            return Message(role="user", content=full_text)
     
     def _build_progress_info(self) -> str:
         """构建当前进度信息"""
@@ -273,17 +353,48 @@ class Agent:
     
     def _build_system_prompt(self) -> str:
         """构建系统提示"""
+        # 视觉能力说明
+        vision_info = ""
+        if self.use_vision:
+            vision_info = """
+### 🖼️ 视觉能力（已启用）
+你可以看到页面的截图！利用视觉信息来：
+- 理解页面布局和设计
+- 识别按钮、链接、输入框的位置
+- 确认操作是否成功
+- 发现页面上的关键信息
+
+截图中的元素与元素列表中的 idx 对应，可以通过 pos 坐标定位。
+"""
+        
+        # DOM 剪枝说明
+        dom_info = ""
+        if self.use_dom_pruning:
+            dom_info = """
+### 🌳 元素索引系统
+页面元素已被智能剪枝和索引：
+- [idx] 是元素的唯一索引号
+- 使用 selector 字段的值来操作元素
+- 元素按页面位置排序（从上到下，从左到右）
+- 视口内的元素优先显示
+
+操作示例：
+- 点击索引为 5 的按钮：`{"action": "click", "params": {"selector": "#submit-btn"}}`
+- 使用 data-agent-idx：`{"action": "click", "params": {"selector": "[data-agent-idx=\\"5\\"]"}}`
+"""
+        
         return f"""你是一个专业的浏览器自动化 Agent，能够通过工具操作浏览器完成复杂任务。
 
 {self.tools.get_tools_description()}
 
 ## 重要提示
-
+{vision_info}
+{dom_info}
 ### 基本规则
 1. 每次响应必须返回一个 JSON 格式的操作
 2. **浏览器启动时是空白页（about:blank），你必须首先使用 navigate() 导航到目标网站！**
 3. 如果操作失败，尝试其他方法
-4. 优先使用 CSS 选择器，如果不行再尝试 XPath
+4. 优先使用元素列表中提供的 selector，如果不行再尝试其他选择器
 
 ### ⚠️ 任务完成规则（极其重要！）
 1. **只有当任务的所有目标都已达成时，才能调用 done() 工具**

@@ -465,6 +465,317 @@ class Browser:
         await self.start()
         await self.page.select_option(selector, value)
         logger.info(f"已选择: {selector} -> {value}")
+    
+    async def get_pruned_dom(self, max_elements: int = 50) -> dict:
+        """
+        获取剪枝后的 DOM 树 - 只保留可交互元素和关键信息
+        
+        Args:
+            max_elements: 最大返回元素数量
+            
+        Returns:
+            包含剪枝后 DOM 信息的字典
+        """
+        await self.start()
+        
+        # 高级 DOM 剪枝脚本
+        script = """
+        (maxElements) => {
+            const result = {
+                url: window.location.href,
+                title: document.title,
+                viewport: {
+                    width: window.innerWidth,
+                    height: window.innerHeight,
+                    scrollY: window.scrollY
+                },
+                elements: []
+            };
+            
+            // 可交互元素选择器（按重要性排序）
+            const interactiveSelectors = [
+                'button:not([disabled])',
+                'a[href]',
+                'input:not([type="hidden"]):not([disabled])',
+                'textarea:not([disabled])',
+                'select:not([disabled])',
+                '[role="button"]',
+                '[role="link"]',
+                '[role="checkbox"]',
+                '[role="radio"]',
+                '[role="tab"]',
+                '[role="menuitem"]',
+                '[onclick]',
+                '[data-action]',
+                '[contenteditable="true"]'
+            ];
+            
+            // 要排除的元素（广告、追踪、无关紧要的）
+            const excludePatterns = [
+                /^ad[-_]?/i, /advertisement/i, /tracking/i, /analytics/i,
+                /cookie[-_]?banner/i, /popup/i, /modal[-_]?overlay/i,
+                /social[-_]?share/i, /newsletter/i
+            ];
+            
+            // 检查元素是否应该被排除
+            function shouldExclude(el) {
+                const id = el.id || '';
+                const className = el.className || '';
+                const combined = id + ' ' + className;
+                return excludePatterns.some(pattern => pattern.test(combined));
+            }
+            
+            // 检查元素是否在视口内或附近
+            function isNearViewport(rect) {
+                const buffer = 200; // 视口外200px也算
+                return (
+                    rect.bottom >= -buffer &&
+                    rect.top <= window.innerHeight + buffer &&
+                    rect.right >= -buffer &&
+                    rect.left <= window.innerWidth + buffer
+                );
+            }
+            
+            // 获取元素的最佳选择器
+            function getBestSelector(el, index) {
+                // 优先使用 ID
+                if (el.id) {
+                    return `#${el.id}`;
+                }
+                
+                // 使用 data-testid 或 data-id
+                if (el.dataset.testid) {
+                    return `[data-testid="${el.dataset.testid}"]`;
+                }
+                if (el.dataset.id) {
+                    return `[data-id="${el.dataset.id}"]`;
+                }
+                
+                // 使用唯一的 class 组合
+                if (el.className && typeof el.className === 'string') {
+                    const classes = el.className.trim().split(/\\s+/).slice(0, 2).join('.');
+                    if (classes) {
+                        const selector = el.tagName.toLowerCase() + '.' + classes;
+                        if (document.querySelectorAll(selector).length === 1) {
+                            return selector;
+                        }
+                    }
+                }
+                
+                // 使用 name 属性
+                if (el.name) {
+                    return `[name="${el.name}"]`;
+                }
+                
+                // 最后使用索引标记
+                return `[data-agent-idx="${index}"]`;
+            }
+            
+            // 提取元素的简洁描述
+            function getElementDescription(el) {
+                // 获取可见文本
+                let text = '';
+                if (el.tagName === 'INPUT') {
+                    text = el.value || el.placeholder || '';
+                } else if (el.tagName === 'IMG') {
+                    text = el.alt || '';
+                } else {
+                    // 只获取直接文本，不包括子元素
+                    text = el.textContent?.trim() || '';
+                }
+                // 限制长度
+                return text.substring(0, 60).replace(/\\s+/g, ' ');
+            }
+            
+            // 收集所有可交互元素
+            const allElements = [];
+            const seen = new Set();
+            
+            interactiveSelectors.forEach(selector => {
+                try {
+                    document.querySelectorAll(selector).forEach(el => {
+                        if (seen.has(el)) return;
+                        seen.add(el);
+                        
+                        const rect = el.getBoundingClientRect();
+                        
+                        // 过滤条件
+                        if (rect.width < 5 || rect.height < 5) return; // 太小
+                        if (!isNearViewport(rect)) return; // 不在视口附近
+                        if (shouldExclude(el)) return; // 被排除
+                        if (window.getComputedStyle(el).display === 'none') return; // 隐藏
+                        if (window.getComputedStyle(el).visibility === 'hidden') return;
+                        
+                        allElements.push({
+                            el: el,
+                            rect: rect,
+                            inViewport: rect.top >= 0 && rect.top < window.innerHeight
+                        });
+                    });
+                } catch (e) {}
+            });
+            
+            // 按位置排序（从上到下，从左到右）
+            allElements.sort((a, b) => {
+                // 优先显示视口内的元素
+                if (a.inViewport !== b.inViewport) {
+                    return a.inViewport ? -1 : 1;
+                }
+                // 按 Y 坐标排序
+                if (Math.abs(a.rect.top - b.rect.top) > 20) {
+                    return a.rect.top - b.rect.top;
+                }
+                // Y 坐标相近时按 X 排序
+                return a.rect.left - b.rect.left;
+            });
+            
+            // 限制数量并格式化
+            allElements.slice(0, maxElements).forEach((item, index) => {
+                const el = item.el;
+                const rect = item.rect;
+                
+                // 添加索引标记到元素（用于后续定位）
+                el.setAttribute('data-agent-idx', index.toString());
+                
+                const tag = el.tagName.toLowerCase();
+                const type = el.type || '';
+                const text = getElementDescription(el);
+                const selector = getBestSelector(el, index);
+                
+                // 构建简洁的元素信息
+                const elementInfo = {
+                    idx: index,
+                    tag: tag,
+                    selector: selector
+                };
+                
+                // 只添加有意义的属性
+                if (text) elementInfo.text = text;
+                if (type && type !== 'submit') elementInfo.type = type;
+                if (el.href) elementInfo.href = el.href.substring(0, 80);
+                if (el.name) elementInfo.name = el.name;
+                if (el.placeholder) elementInfo.placeholder = el.placeholder.substring(0, 30);
+                if (el.checked !== undefined) elementInfo.checked = el.checked;
+                if (el.disabled) elementInfo.disabled = true;
+                
+                // 添加位置信息（用于视觉对照）
+                elementInfo.pos = {
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height / 2)
+                };
+                
+                result.elements.push(elementInfo);
+            });
+            
+            return result;
+        }
+        """
+        
+        try:
+            dom_info = await self.page.evaluate(script, max_elements)
+            logger.info(f"DOM 剪枝完成: 提取了 {len(dom_info.get('elements', []))} 个可交互元素")
+            return dom_info
+        except Exception as e:
+            logger.error(f"DOM 剪枝失败: {e}")
+            return {
+                "url": self.page.url,
+                "title": await self.page.title(),
+                "elements": [],
+                "error": str(e)
+            }
+    
+    async def get_compact_state(self, include_screenshot: bool = True, 
+                                 screenshot_quality: int = 50,
+                                 max_elements: int = 40) -> dict:
+        """
+        获取页面的紧凑状态（用于多模态 Agent）
+        
+        Args:
+            include_screenshot: 是否包含截图
+            screenshot_quality: 截图质量 (1-100)
+            max_elements: 最大元素数量
+            
+        Returns:
+            包含截图和剪枝 DOM 的字典
+        """
+        await self.start()
+        
+        state = {
+            "url": self.page.url,
+            "title": await self.page.title(),
+        }
+        
+        # 获取剪枝后的 DOM
+        dom_info = await self.get_pruned_dom(max_elements)
+        state["elements"] = dom_info.get("elements", [])
+        state["viewport"] = dom_info.get("viewport", {})
+        
+        # 获取截图
+        if include_screenshot:
+            try:
+                # 使用 JPEG 格式和较低质量减少大小
+                screenshot = await self.page.screenshot(
+                    type="jpeg",
+                    quality=screenshot_quality,
+                    full_page=False  # 只截取视口
+                )
+                state["screenshot"] = screenshot
+                state["screenshot_size"] = len(screenshot)
+                logger.info(f"截图大小: {len(screenshot) / 1024:.1f} KB")
+            except Exception as e:
+                logger.warning(f"截图失败: {e}")
+                state["screenshot"] = None
+        
+        return state
+    
+    def format_elements_for_llm(self, elements: list, max_chars: int = 3000) -> str:
+        """
+        将元素列表格式化为 LLM 友好的文本
+        
+        Args:
+            elements: 元素列表
+            max_chars: 最大字符数
+            
+        Returns:
+            格式化的文本
+        """
+        if not elements:
+            return "页面上没有找到可交互元素"
+        
+        lines = ["可交互元素列表 (使用 idx 或 selector 进行操作):"]
+        lines.append("-" * 50)
+        
+        for el in elements:
+            idx = el.get("idx", "?")
+            tag = el.get("tag", "unknown")
+            text = el.get("text", "")
+            selector = el.get("selector", "")
+            el_type = el.get("type", "")
+            href = el.get("href", "")
+            
+            # 构建简洁的描述
+            parts = [f"[{idx}]", f"<{tag}>"]
+            
+            if el_type:
+                parts.append(f"type={el_type}")
+            if text:
+                parts.append(f'"{text}"')
+            if href:
+                # 简化 URL
+                short_href = href.split("?")[0][-40:] if len(href) > 40 else href
+                parts.append(f"→{short_href}")
+            
+            parts.append(f"| {selector}")
+            
+            line = " ".join(parts)
+            lines.append(line)
+            
+            # 检查长度限制
+            if len("\n".join(lines)) > max_chars:
+                lines.append(f"... 还有 {len(elements) - idx - 1} 个元素未显示")
+                break
+        
+        return "\n".join(lines)
 
     async def __aenter__(self):
         await self.start()

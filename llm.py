@@ -1,21 +1,94 @@
-"""LLM 接口封装"""
+"""LLM 接口封装 - 支持多模态"""
 
 import os
 import logging
-from typing import Optional, List, Dict, Any
+import base64
+from typing import Optional, List, Dict, Any, Union
 from pydantic import BaseModel
 
 logger = logging.getLogger(__name__)
 
 
+class ImageContent(BaseModel):
+    """图片内容"""
+    type: str = "image"
+    image_data: str  # base64 编码的图片数据
+    media_type: str = "image/png"  # 图片类型
+
+
+class TextContent(BaseModel):
+    """文本内容"""
+    type: str = "text"
+    text: str
+
+
 class Message(BaseModel):
-    """消息模型"""
+    """消息模型 - 支持多模态"""
     role: str  # "system", "user", "assistant"
-    content: str
+    content: Union[str, List[Union[TextContent, ImageContent]]]  # 支持纯文本或多模态内容
+    
+    def to_openai_format(self) -> Dict[str, Any]:
+        """转换为 OpenAI API 格式"""
+        if isinstance(self.content, str):
+            return {"role": self.role, "content": self.content}
+        
+        # 多模态格式
+        content_list = []
+        for item in self.content:
+            if isinstance(item, TextContent):
+                content_list.append({"type": "text", "text": item.text})
+            elif isinstance(item, ImageContent):
+                content_list.append({
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:{item.media_type};base64,{item.image_data}",
+                        "detail": "low"  # 使用 low 减少 token 消耗
+                    }
+                })
+        return {"role": self.role, "content": content_list}
+    
+    def to_anthropic_format(self) -> Dict[str, Any]:
+        """转换为 Anthropic API 格式"""
+        if isinstance(self.content, str):
+            return {"role": self.role, "content": self.content}
+        
+        # 多模态格式
+        content_list = []
+        for item in self.content:
+            if isinstance(item, TextContent):
+                content_list.append({"type": "text", "text": item.text})
+            elif isinstance(item, ImageContent):
+                content_list.append({
+                    "type": "image",
+                    "source": {
+                        "type": "base64",
+                        "media_type": item.media_type,
+                        "data": item.image_data
+                    }
+                })
+        return {"role": self.role, "content": content_list}
+    
+    @classmethod
+    def create_multimodal(cls, role: str, text: str, image_data: Optional[bytes] = None, 
+                          media_type: str = "image/png") -> "Message":
+        """创建多模态消息的便捷方法"""
+        if image_data is None:
+            return cls(role=role, content=text)
+        
+        # 将图片转为 base64
+        image_base64 = base64.b64encode(image_data).decode("utf-8")
+        
+        content = [
+            TextContent(text=text),
+            ImageContent(image_data=image_base64, media_type=media_type)
+        ]
+        return cls(role=role, content=content)
 
 
 class BaseLLM:
     """LLM 基类"""
+    
+    supports_vision: bool = False  # 是否支持视觉/多模态
     
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
@@ -27,7 +100,7 @@ class BaseLLM:
 
 
 class ChatOpenAI(BaseLLM):
-    """OpenAI ChatGPT 接口"""
+    """OpenAI ChatGPT 接口 - 支持多模态"""
     
     def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
@@ -35,6 +108,7 @@ class ChatOpenAI(BaseLLM):
             raise ValueError("需要提供 OPENAI_API_KEY 或设置环境变量")
         super().__init__(self.api_key)
         self.model = model
+        self.supports_vision = True  # GPT-4o 系列支持视觉
         try:
             from openai import AsyncOpenAI
             self.client = AsyncOpenAI(api_key=self.api_key)
@@ -42,12 +116,16 @@ class ChatOpenAI(BaseLLM):
             raise ImportError("请安装 openai: pip install openai")
     
     async def chat(self, messages: List[Message]) -> str:
-        """调用 OpenAI API"""
+        """调用 OpenAI API（支持多模态）"""
         try:
+            # 转换消息格式
+            formatted_messages = [msg.to_openai_format() for msg in messages]
+            
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": msg.role, "content": msg.content} for msg in messages],
+                messages=formatted_messages,
                 temperature=0.7,
+                max_tokens=4096,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -56,7 +134,7 @@ class ChatOpenAI(BaseLLM):
 
 
 class ChatAnthropic(BaseLLM):
-    """Anthropic Claude 接口"""
+    """Anthropic Claude 接口 - 支持多模态"""
     
     def __init__(self, api_key: Optional[str] = None, model: str = "claude-3-5-sonnet-20241022"):
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
@@ -64,6 +142,7 @@ class ChatAnthropic(BaseLLM):
             raise ValueError("需要提供 ANTHROPIC_API_KEY 或设置环境变量")
         super().__init__(self.api_key)
         self.model = model
+        self.supports_vision = True  # Claude 3 系列支持视觉
         try:
             from anthropic import AsyncAnthropic
             self.client = AsyncAnthropic(api_key=self.api_key)
@@ -71,7 +150,7 @@ class ChatAnthropic(BaseLLM):
             raise ImportError("请安装 anthropic: pip install anthropic")
     
     async def chat(self, messages: List[Message]) -> str:
-        """调用 Anthropic API"""
+        """调用 Anthropic API（支持多模态）"""
         try:
             # Anthropic 需要 system 消息单独处理
             system_msg = None
@@ -79,12 +158,10 @@ class ChatAnthropic(BaseLLM):
             
             for msg in messages:
                 if msg.role == "system":
-                    system_msg = msg.content
+                    # system 消息只能是纯文本
+                    system_msg = msg.content if isinstance(msg.content, str) else msg.content[0].text
                 else:
-                    chat_messages.append({
-                        "role": msg.role,
-                        "content": msg.content
-                    })
+                    chat_messages.append(msg.to_anthropic_format())
             
             response = await self.client.messages.create(
                 model=self.model,
@@ -99,7 +176,7 @@ class ChatAnthropic(BaseLLM):
 
 
 class ChatDeepSeek(BaseLLM):
-    """DeepSeek 接口 (OpenAI 兼容)"""
+    """DeepSeek 接口 (OpenAI 兼容) - 暂不支持多模态"""
     
     def __init__(
         self, 
@@ -124,6 +201,7 @@ class ChatDeepSeek(BaseLLM):
             raise ValueError("需要提供 DEEPSEEK_API_KEY 或设置环境变量")
         super().__init__(self.api_key)
         self.model = model
+        self.supports_vision = False  # DeepSeek 暂不支持视觉
         self.base_url = base_url or os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
         
         try:
@@ -136,11 +214,21 @@ class ChatDeepSeek(BaseLLM):
             raise ImportError("请安装 openai: pip install openai")
     
     async def chat(self, messages: List[Message]) -> str:
-        """调用 DeepSeek API"""
+        """调用 DeepSeek API（仅文本）"""
         try:
+            # DeepSeek 不支持多模态，只提取文本内容
+            formatted_messages = []
+            for msg in messages:
+                if isinstance(msg.content, str):
+                    formatted_messages.append({"role": msg.role, "content": msg.content})
+                else:
+                    # 多模态消息，只提取文本
+                    text_parts = [item.text for item in msg.content if isinstance(item, TextContent)]
+                    formatted_messages.append({"role": msg.role, "content": "\n".join(text_parts)})
+            
             response = await self.client.chat.completions.create(
                 model=self.model,
-                messages=[{"role": msg.role, "content": msg.content} for msg in messages],
+                messages=formatted_messages,
                 temperature=0.7,
             )
             return response.choices[0].message.content
@@ -150,7 +238,7 @@ class ChatDeepSeek(BaseLLM):
 
 
 class ChatDoubao(BaseLLM):
-    """豆包 Seed1.8 接口"""
+    """豆包 Seed1.8 接口 - 支持多模态"""
     
     def __init__(
         self, 
@@ -188,6 +276,7 @@ class ChatDoubao(BaseLLM):
         
         super().__init__(self.auth_token)
         self.model = model
+        self.supports_vision = True  # 豆包支持视觉（使用 OpenAI 兼容格式）
         # 默认使用火山引擎的 API 端点，如果不对请通过环境变量或参数覆盖
         self.base_url = base_url or os.getenv("DOUBAO_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
         try:
@@ -206,7 +295,7 @@ class ChatDoubao(BaseLLM):
     
     async def chat(self, messages: List[Message]) -> str:
         """
-        调用豆包 API
+        调用豆包 API（支持多模态）
         
         根据官方文档：
         - 端点: POST https://ark.cn-beijing.volces.com/api/v3/chat/completions
@@ -215,13 +304,8 @@ class ChatDoubao(BaseLLM):
         """
         import httpx
         
-        # 转换消息格式
-        formatted_messages = []
-        for msg in messages:
-            formatted_messages.append({
-                "role": msg.role,
-                "content": msg.content
-            })
+        # 转换消息格式（使用 OpenAI 兼容格式）
+        formatted_messages = [msg.to_openai_format() for msg in messages]
         
         # 构建请求头 - 根据官方文档使用 Bearer token
         # 使用 secret_key 或 api_key 作为 Bearer token

@@ -333,7 +333,24 @@
                     </small>
                 </div>
                 
-                <button id="startBtn" class="btn btn-primary" onclick="startTask()">开始任务</button>
+                <div class="form-group" style="background: #f0f7ff; padding: 15px; border-radius: 8px; margin-top: 15px;">
+                    <label style="margin-bottom: 10px; color: #1976d2;">🚀 高级选项</label>
+                    <div style="display: flex; flex-direction: column; gap: 8px;">
+                        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                            <input type="checkbox" id="use_vision" checked style="width: auto; margin-right: 10px;">
+                            <span>🖼️ 启用视觉模式（发送截图给 LLM）</span>
+                        </label>
+                        <label style="display: flex; align-items: center; cursor: pointer; font-weight: normal;">
+                            <input type="checkbox" id="use_dom_pruning" checked style="width: auto; margin-right: 10px;">
+                            <span>🌳 启用 DOM 剪枝（智能提取关键元素）</span>
+                        </label>
+                    </div>
+                    <small style="color: #666; font-size: 11px; display: block; margin-top: 8px;">
+                        视觉模式需要 GPT-4o/Claude 3 等支持图像的模型
+                    </small>
+                </div>
+                
+                <button id="startBtn" class="btn btn-primary" onclick="startTask()" style="margin-top: 15px;">开始任务</button>
                 <button id="stopBtn" class="btn btn-danger" onclick="stopTask()" style="margin-top: 10px; display: none;">停止任务</button>
             </div>
             
@@ -519,9 +536,19 @@
             const llmType = document.getElementById('llm_type').value;
             const apiKey = document.getElementById('api_key').value.trim();
             const useExistingBrowser = document.getElementById('use_existing_browser').checked;
+            const useVision = document.getElementById('use_vision').checked;
+            const useDomPruning = document.getElementById('use_dom_pruning').checked;
             
             if (useExistingBrowser) {
                 addLog('🔗 尝试连接到已运行的 Chrome 浏览器...', 'info');
+            }
+            
+            // 显示模式信息
+            const modes = [];
+            if (useVision) modes.push('视觉模式');
+            if (useDomPruning) modes.push('DOM剪枝');
+            if (modes.length > 0) {
+                addLog(`⚡ 已启用: ${modes.join(' + ')}`, 'info');
             }
             
             ws.send(JSON.stringify({
@@ -529,10 +556,12 @@
                 task: task,
                 llm_type: llmType,
                 api_key: apiKey || undefined,
-                use_existing_browser: useExistingBrowser
+                use_existing_browser: useExistingBrowser,
+                use_vision: useVision,
+                use_dom_pruning: useDomPruning
             }));
             
-            addLog(`发送任务: ${task}`, 'info');
+            addLog(`📋 发送任务: ${task}`, 'info');
         }
         
         function stopTask() {

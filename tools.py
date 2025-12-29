@@ -200,13 +200,18 @@ URL: {url}
             )
     
     async def _get_elements(self) -> ActionResult:
-        """获取元素列表"""
+        """获取元素列表（使用 DOM 剪枝）"""
         try:
-            elements = await self.browser.get_elements_info()
-            elements_str = json.dumps(elements[:20], ensure_ascii=False, indent=2)  # 限制数量
+            # 使用剪枝后的 DOM
+            dom_info = await self.browser.get_pruned_dom(max_elements=50)
+            elements = dom_info.get("elements", [])
+            
+            # 格式化为易读的文本
+            formatted = self.browser.format_elements_for_llm(elements, max_chars=4000)
+            
             return ActionResult(
                 success=True,
-                content=f"找到 {len(elements)} 个可交互元素（显示前20个）:\n{elements_str}"
+                content=f"找到 {len(elements)} 个可交互元素:\n{formatted}"
             )
         except Exception as e:
             return ActionResult(
@@ -258,16 +263,24 @@ URL: {url}
             )
     
     async def _get_text(self) -> ActionResult:
-        """获取页面纯文本"""
+        """获取页面纯文本（智能摘要）"""
         try:
             text = await self.browser.get_text()
-            # 限制长度
-            max_length = 8000
-            if len(text) > max_length:
-                text = text[:max_length] + "\n...(内容已截断)"
-            
             title = await self.browser.get_title()
             url = await self.browser.get_url()
+            
+            # 智能截取：保留开头和关键部分
+            max_length = 4000
+            if len(text) > max_length:
+                # 保留开头 60% 和结尾 30%
+                head_len = int(max_length * 0.6)
+                tail_len = int(max_length * 0.3)
+                text = text[:head_len] + "\n\n...(中间内容已省略)...\n\n" + text[-tail_len:]
+            
+            # 压缩多余空白
+            import re
+            text = re.sub(r'\n{3,}', '\n\n', text)
+            text = re.sub(r' {2,}', ' ', text)
             
             return ActionResult(
                 success=True,

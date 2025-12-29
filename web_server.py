@@ -96,6 +96,10 @@ async def websocket_endpoint(websocket: WebSocket):
                     # 创建 LLM
                     llm = create_llm(llm_type, api_key)
                     
+                    # 多模态配置
+                    use_vision = message.get("use_vision", True)
+                    use_dom_pruning = message.get("use_dom_pruning", True)
+                    
                     # 创建浏览器和 Agent
                     # 检查是否使用连接模式（连接到已运行的Chrome）
                     use_existing_browser = message.get("use_existing_browser", False)
@@ -103,14 +107,30 @@ async def websocket_endpoint(websocket: WebSocket):
                         headless=False,
                         connect_to_existing=use_existing_browser
                     )
-                    agent = Agent(task=task, llm=llm, browser=browser)
+                    agent = Agent(
+                        task=task, 
+                        llm=llm, 
+                        browser=browser,
+                        use_vision=use_vision,
+                        use_dom_pruning=use_dom_pruning
+                    )
                     agent_id = f"agent_{id(agent)}"
                     active_agents[agent_id] = agent
+                    
+                    # 构建启动消息
+                    mode_info = []
+                    if agent.use_vision:
+                        mode_info.append("视觉模式")
+                    if agent.use_dom_pruning:
+                        mode_info.append("DOM剪枝")
+                    mode_str = " + ".join(mode_info) if mode_info else "纯文本模式"
                     
                     await websocket.send_json({
                         "type": "task_started",
                         "agent_id": agent_id,
-                        "message": "任务已开始"
+                        "message": f"任务已开始 ({mode_str})",
+                        "use_vision": agent.use_vision,
+                        "use_dom_pruning": agent.use_dom_pruning
                     })
                     
                     # 在后台执行任务
