@@ -18,11 +18,11 @@ load_dotenv()
 try:
     from .agent import Agent
     from .browser import Browser
-    from .llm import ChatOpenAI, ChatAnthropic, ChatDoubao, ChatDeepSeek, BaseLLM
+    from .llm import ChatOpenAI, ChatAnthropic, ChatDoubao, ChatDeepSeek, ChatGemini, ChatQwen, BaseLLM
 except ImportError:
     from agent import Agent
     from browser import Browser
-    from llm import ChatOpenAI, ChatAnthropic, ChatDoubao, ChatDeepSeek, BaseLLM
+    from llm import ChatOpenAI, ChatAnthropic, ChatDoubao, ChatDeepSeek, ChatGemini, ChatQwen, BaseLLM
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -43,6 +43,10 @@ def create_llm(llm_type: str = "openai", api_key: Optional[str] = None) -> BaseL
         return ChatDoubao(api_key=api_key)
     elif llm_type == "deepseek":
         return ChatDeepSeek(api_key=api_key)
+    elif llm_type == "gemini":
+        return ChatGemini(api_key=api_key)
+    elif llm_type == "qwen":
+        return ChatQwen(api_key=api_key)
     else:
         raise ValueError(f"不支持的 LLM 类型: {llm_type}")
 

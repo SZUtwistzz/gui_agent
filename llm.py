@@ -366,3 +366,214 @@ class ChatDoubao(BaseLLM):
             error_msg = f"豆包 API 调用异常: {str(e)}"
             logger.error(error_msg)
             raise ValueError(error_msg) from e
+
+
+class ChatQwen(BaseLLM):
+    """阿里云百炼 Qwen VL 接口 - 支持多模态"""
+    
+    def __init__(
+        self, 
+        api_key: Optional[str] = None,
+        model: str = "qwen-vl-plus",
+        base_url: Optional[str] = None
+    ):
+        """
+        初始化通义千问模型
+        
+        阿里云百炼使用 OpenAI 兼容的 API 格式
+        - API 端点: https://dashscope.aliyuncs.com/compatible-mode/v1
+        - 认证方式: Authorization: Bearer {API_KEY}
+        
+        Args:
+            api_key: API密钥，也可通过环境变量 QWEN_API_KEY 或 DASHSCOPE_API_KEY 设置
+            model: 模型名称，默认为 qwen-vl-plus
+                   可选: qwen-vl-plus, qwen-vl-max, qwen2.5-vl-72b-instruct
+            base_url: API基础URL，默认为阿里云百炼端点
+        """
+        self.api_key = api_key or os.getenv("QWEN_API_KEY") or os.getenv("DASHSCOPE_API_KEY")
+        if not self.api_key:
+            raise ValueError("需要提供 QWEN_API_KEY 或设置环境变量")
+        super().__init__(self.api_key)
+        self.model = model
+        self.supports_vision = True  # Qwen VL 支持视觉
+        self.base_url = base_url or os.getenv("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+        
+        try:
+            from openai import AsyncOpenAI
+            self.client = AsyncOpenAI(
+                api_key=self.api_key,
+                base_url=self.base_url
+            )
+        except ImportError:
+            raise ImportError("请安装 openai: pip install openai")
+    
+    async def chat(self, messages: List[Message]) -> str:
+        """调用 Qwen VL API（支持多模态）"""
+        try:
+            # 转换消息格式（使用 OpenAI 兼容格式）
+            formatted_messages = []
+            for msg in messages:
+                formatted_msg = msg.to_openai_format()
+                
+                # Qwen VL 对图片格式有特殊要求，需要调整
+                if isinstance(formatted_msg.get("content"), list):
+                    new_content = []
+                    for item in formatted_msg["content"]:
+                        if item.get("type") == "image_url":
+                            # Qwen VL 使用 image_url 格式
+                            new_content.append({
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": item["image_url"]["url"]
+                                }
+                            })
+                        else:
+                            new_content.append(item)
+                    formatted_msg["content"] = new_content
+                
+                formatted_messages.append(formatted_msg)
+            
+            logger.info(f"调用 Qwen VL API: {self.model}")
+            
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=formatted_messages,
+                temperature=0.7,
+                max_tokens=4096,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.error(f"Qwen VL API 调用失败: {e}")
+            raise ValueError(f"Qwen VL API 调用失败: {str(e)}") from e
+
+
+class ChatGemini(BaseLLM):
+    """Google Gemini 接口 - 支持多模态"""
+    
+    def __init__(
+        self, 
+        api_key: Optional[str] = None,
+        model: str = "gemini-2.0-flash",
+    ):
+        """
+        初始化 Gemini 模型
+        
+        Args:
+            api_key: API密钥，也可通过环境变量 GEMINI_API_KEY 设置
+            model: 模型名称，默认为 gemini-2.0-flash
+                   可选: gemini-1.5-pro, gemini-1.5-flash, gemini-2.0-flash
+        """
+        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        if not self.api_key:
+            raise ValueError("需要提供 GEMINI_API_KEY 或设置环境变量")
+        super().__init__(self.api_key)
+        self.model = model
+        self.supports_vision = True  # Gemini 支持视觉
+        
+        try:
+            import google.generativeai as genai
+            genai.configure(api_key=self.api_key)
+            self.genai = genai
+            self._model = genai.GenerativeModel(self.model)
+        except ImportError:
+            raise ImportError("请安装 google-generativeai: pip install google-generativeai")
+    
+    async def chat(self, messages: List[Message]) -> str:
+        """调用 Gemini API（支持多模态）"""
+        import asyncio
+        
+        try:
+            # 转换消息格式为 Gemini 格式
+            gemini_messages = []
+            system_instruction = None
+            
+            for msg in messages:
+                if msg.role == "system":
+                    # Gemini 使用 system_instruction
+                    if isinstance(msg.content, str):
+                        system_instruction = msg.content
+                    else:
+                        system_instruction = msg.content[0].text if msg.content else ""
+                    continue
+                
+                # 转换 role
+                role = "user" if msg.role == "user" else "model"
+                
+                if isinstance(msg.content, str):
+                    # 纯文本消息
+                    gemini_messages.append({
+                        "role": role,
+                        "parts": [{"text": msg.content}]
+                    })
+                else:
+                    # 多模态消息
+                    parts = []
+                    for item in msg.content:
+                        if isinstance(item, TextContent):
+                            parts.append({"text": item.text})
+                        elif isinstance(item, ImageContent):
+                            # Gemini 使用 inline_data 格式
+                            parts.append({
+                                "inline_data": {
+                                    "mime_type": item.media_type,
+                                    "data": item.image_data
+                                }
+                            })
+                    gemini_messages.append({
+                        "role": role,
+                        "parts": parts
+                    })
+            
+            # 如果有 system instruction，重新创建模型
+            if system_instruction:
+                model = self.genai.GenerativeModel(
+                    self.model,
+                    system_instruction=system_instruction
+                )
+            else:
+                model = self._model
+            
+            # Gemini SDK 是同步的，需要在线程中运行
+            def sync_generate():
+                chat = model.start_chat(history=gemini_messages[:-1] if len(gemini_messages) > 1 else [])
+                
+                # 获取最后一条消息的 parts
+                if gemini_messages:
+                    last_msg = gemini_messages[-1]
+                    parts = last_msg.get("parts", [])
+                    
+                    # 转换 parts 为 Gemini 可接受的格式
+                    gemini_parts = []
+                    for part in parts:
+                        if "text" in part:
+                            gemini_parts.append(part["text"])
+                        elif "inline_data" in part:
+                            # 创建 PIL Image 或使用 base64
+                            import base64
+                            from io import BytesIO
+                            try:
+                                from PIL import Image
+                                image_data = base64.b64decode(part["inline_data"]["data"])
+                                image = Image.open(BytesIO(image_data))
+                                gemini_parts.append(image)
+                            except ImportError:
+                                # 如果没有 PIL，使用字典格式
+                                gemini_parts.append({
+                                    "mime_type": part["inline_data"]["mime_type"],
+                                    "data": part["inline_data"]["data"]
+                                })
+                    
+                    response = chat.send_message(gemini_parts)
+                else:
+                    response = chat.send_message("Hello")
+                
+                return response.text
+            
+            # 在线程池中运行同步代码
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(None, sync_generate)
+            return result
+            
+        except Exception as e:
+            logger.error(f"Gemini API 调用失败: {e}")
+            raise ValueError(f"Gemini API 调用失败: {str(e)}") from e
