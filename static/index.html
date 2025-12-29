@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>轻量级 Web GUI Agent</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.9;
+            font-size: 1.1em;
+        }
+        
+        .content {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 0;
+            min-height: 600px;
+        }
+        
+        .left-panel {
+            padding: 30px;
+            border-right: 1px solid #e0e0e0;
+        }
+        
+        .right-panel {
+            padding: 30px;
+            background: #f8f9fa;
+            overflow-y: auto;
+            max-height: 600px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #333;
+        }
+        
+        input, textarea, select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 14px;
+            transition: border-color 0.3s;
+        }
+        
+        input:focus, textarea:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        textarea {
+            min-height: 120px;
+            resize: vertical;
+            font-family: inherit;
+        }
+        
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-danger {
+            background: #e74c3c;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #c0392b;
+        }
+        
+        .log-container {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 13px;
+            line-height: 1.6;
+            max-height: 500px;
+            overflow-y: auto;
+        }
+        
+        .log-entry {
+            margin-bottom: 12px;
+            padding: 8px;
+            border-left: 3px solid transparent;
+            border-radius: 4px;
+        }
+        
+        .log-entry.info {
+            border-left-color: #4a9eff;
+            background: rgba(74, 158, 255, 0.1);
+        }
+        
+        .log-entry.success {
+            border-left-color: #4caf50;
+            background: rgba(76, 175, 80, 0.1);
+        }
+        
+        .log-entry.error {
+            border-left-color: #f44336;
+            background: rgba(244, 67, 54, 0.1);
+        }
+        
+        .log-entry.warning {
+            border-left-color: #ff9800;
+            background: rgba(255, 152, 0, 0.1);
+        }
+        
+        .log-time {
+            color: #888;
+            font-size: 11px;
+            margin-right: 8px;
+        }
+        
+        .status {
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            font-weight: 600;
+        }
+        
+        .status.idle {
+            background: #e3f2fd;
+            color: #1976d2;
+        }
+        
+        .status.running {
+            background: #fff3e0;
+            color: #f57c00;
+        }
+        
+        .status.complete {
+            background: #e8f5e9;
+            color: #388e3c;
+        }
+        
+        .status.error {
+            background: #ffebee;
+            color: #d32f2f;
+        }
+        
+        .status.warning {
+            background: #fff8e1;
+            color: #f57c00;
+        }
+        
+        /* 完成横幅样式 */
+        .completion-banner {
+            position: fixed;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            animation: slideDown 0.3s ease-out;
+        }
+        
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+        
+        .completion-content {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            background: linear-gradient(135deg, #4CAF50 0%, #45a049 100%);
+            color: white;
+            padding: 15px 25px;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(76, 175, 80, 0.4);
+            max-width: 500px;
+        }
+        
+        .completion-icon {
+            font-size: 2em;
+        }
+        
+        .completion-text {
+            flex: 1;
+        }
+        
+        .completion-text strong {
+            display: block;
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+        
+        .completion-text p {
+            font-size: 0.9em;
+            opacity: 0.9;
+            margin: 0;
+            word-break: break-word;
+        }
+        
+        .completion-close {
+            background: rgba(255,255,255,0.2);
+            border: none;
+            color: white;
+            width: 28px;
+            height: 28px;
+            border-radius: 50%;
+            font-size: 18px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        
+        .completion-close:hover {
+            background: rgba(255,255,255,0.3);
+        }
+        
+        @media (max-width: 768px) {
+            .content {
+                grid-template-columns: 1fr;
+            }
+            
+            .left-panel {
+                border-right: none;
+                border-bottom: 1px solid #e0e0e0;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🤖 轻量级 Web GUI Agent</h1>
+            <p>AI 驱动的浏览器自动化工具</p>
+        </div>
+        
+        <div class="content">
+            <div class="left-panel">
+                <div id="status" class="status idle">状态: 就绪</div>
+                
+                <div class="form-group">
+                    <label for="task">任务描述</label>
+                    <textarea id="task" placeholder="例如: 搜索 Python 教程并提取前 3 个结果的标题"></textarea>
+                </div>
+                
+                <div class="form-group">
+                    <label for="llm_type">LLM 提供商</label>
+                    <select id="llm_type">
+                        <option value="openai">OpenAI (GPT)</option>
+                        <option value="anthropic">Anthropic (Claude)</option>
+                        <option value="doubao">豆包 (Seed1.8)</option>
+                        <option value="deepseek">DeepSeek</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label for="api_key">API Key (可选，将使用环境变量)</label>
+                    <input type="password" id="api_key" placeholder="留空则使用环境变量中的 API key">
+                </div>
+                
+                <div class="form-group">
+                    <label style="display: flex; align-items: center; cursor: pointer;">
+                        <input type="checkbox" id="use_existing_browser" style="width: auto; margin-right: 10px;">
+                        <span>连接到已运行的 Chrome（绕过人机验证）</span>
+                    </label>
+                    <small style="color: #666; font-size: 12px; display: block; margin-top: 5px;">
+                        需先运行: chrome.exe --remote-debugging-port=9222
+                    </small>
+                </div>
+                
+                <button id="startBtn" class="btn btn-primary" onclick="startTask()">开始任务</button>
+                <button id="stopBtn" class="btn btn-danger" onclick="stopTask()" style="margin-top: 10px; display: none;">停止任务</button>
+            </div>
+            
+            <div class="right-panel">
+                <h3 style="margin-bottom: 15px;">执行日志</h3>
+                <div id="log" class="log-container"></div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        let ws = null;
+        let isRunning = false;
+        
+        function addLog(message, type = 'info') {
+            const log = document.getElementById('log');
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            
+            const time = new Date().toLocaleTimeString();
+            entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+            
+            log.appendChild(entry);
+            log.scrollTop = log.scrollHeight;
+        }
+        
+        function updateStatus(text, className) {
+            const status = document.getElementById('status');
+            status.textContent = `状态: ${text}`;
+            status.className = `status ${className}`;
+        }
+        
+        function connectWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws`;
+            
+            ws = new WebSocket(wsUrl);
+            
+            ws.onopen = () => {
+                addLog('WebSocket 连接已建立', 'success');
+            };
+            
+            ws.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                handleMessage(message);
+            };
+            
+            ws.onerror = (error) => {
+                addLog(`WebSocket 错误: ${error}`, 'error');
+            };
+            
+            ws.onclose = () => {
+                addLog('WebSocket 连接已关闭', 'warning');
+                isRunning = false;
+                updateStatus('连接断开', 'error');
+                document.getElementById('startBtn').disabled = false;
+                document.getElementById('stopBtn').style.display = 'none';
+            };
+        }
+        
+        function handleMessage(message) {
+            switch(message.type) {
+                case 'task_started':
+                    addLog(`🚀 任务已开始 (Agent ID: ${message.agent_id})`, 'success');
+                    updateStatus('运行中', 'running');
+                    isRunning = true;
+                    document.getElementById('startBtn').disabled = true;
+                    document.getElementById('stopBtn').style.display = 'block';
+                    break;
+                    
+                case 'step_start':
+                    addLog(`📍 步骤 ${message.step}: ${message.page_info}`, 'info');
+                    break;
+                    
+                case 'llm_response':
+                    // 只显示简短版本避免日志过长
+                    const shortResponse = message.response.length > 200 
+                        ? message.response.substring(0, 200) + '...' 
+                        : message.response;
+                    addLog(`🤖 LLM 响应 (步骤 ${message.step}): ${shortResponse}`, 'info');
+                    break;
+                    
+                case 'action_executing':
+                    addLog(`⚡ 执行操作: ${JSON.stringify(message.action)}`, 'info');
+                    break;
+                    
+                case 'step_complete':
+                    const result = message.result;
+                    if (result.success) {
+                        // 检查是否是 done 操作
+                        if (result.is_done) {
+                            addLog(`✅ 步骤 ${message.step} - 任务标记完成: ${result.content || '成功'}`, 'success');
+                        } else {
+                            addLog(`✓ 步骤 ${message.step} 完成: ${result.content ? result.content.substring(0, 100) : '成功'}`, 'success');
+                        }
+                    } else {
+                        addLog(`✗ 步骤 ${message.step} 失败: ${result.error || result.content || '失败'}`, 'error');
+                    }
+                    break;
+                    
+                case 'task_complete':
+                    addLog(`🎉 任务完成: ${message.result}`, 'success');
+                    updateStatus('✅ 已完成', 'complete');
+                    isRunning = false;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').style.display = 'none';
+                    // 显示完成提示
+                    showCompletionBanner(message.result);
+                    break;
+                    
+                case 'task_max_steps':
+                    addLog(`⏱️ 达到最大步数: ${message.message}`, 'warning');
+                    updateStatus('已结束（达到最大步数）', 'warning');
+                    isRunning = false;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').style.display = 'none';
+                    break;
+                    
+                case 'error':
+                    addLog(`❌ 错误: ${message.message}`, 'error');
+                    updateStatus('错误', 'error');
+                    isRunning = false;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').style.display = 'none';
+                    break;
+                    
+                case 'task_stopped':
+                    addLog('⏹️ 任务已停止', 'warning');
+                    updateStatus('已停止', 'idle');
+                    isRunning = false;
+                    document.getElementById('startBtn').disabled = false;
+                    document.getElementById('stopBtn').style.display = 'none';
+                    break;
+            }
+        }
+        
+        function showCompletionBanner(result) {
+            // 创建完成提示横幅
+            const banner = document.createElement('div');
+            banner.className = 'completion-banner';
+            banner.innerHTML = `
+                <div class="completion-content">
+                    <span class="completion-icon">🎉</span>
+                    <div class="completion-text">
+                        <strong>任务已成功完成！</strong>
+                        <p>${result ? result.substring(0, 200) : '任务执行完毕'}</p>
+                    </div>
+                    <button onclick="this.parentElement.parentElement.remove()" class="completion-close">×</button>
+                </div>
+            `;
+            document.body.appendChild(banner);
+            
+            // 5秒后自动关闭
+            setTimeout(() => {
+                if (banner.parentElement) {
+                    banner.remove();
+                }
+            }, 10000);
+        }
+        
+        function startTask() {
+            const task = document.getElementById('task').value.trim();
+            if (!task) {
+                alert('请输入任务描述');
+                return;
+            }
+            
+            if (!ws || ws.readyState !== WebSocket.OPEN) {
+                connectWebSocket();
+                setTimeout(() => {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        sendStartTask(task);
+                    } else {
+                        alert('无法连接到服务器，请刷新页面重试');
+                    }
+                }, 1000);
+            } else {
+                sendStartTask(task);
+            }
+        }
+        
+        function sendStartTask(task) {
+            const llmType = document.getElementById('llm_type').value;
+            const apiKey = document.getElementById('api_key').value.trim();
+            const useExistingBrowser = document.getElementById('use_existing_browser').checked;
+            
+            if (useExistingBrowser) {
+                addLog('🔗 尝试连接到已运行的 Chrome 浏览器...', 'info');
+            }
+            
+            ws.send(JSON.stringify({
+                type: 'start_task',
+                task: task,
+                llm_type: llmType,
+                api_key: apiKey || undefined,
+                use_existing_browser: useExistingBrowser
+            }));
+            
+            addLog(`发送任务: ${task}`, 'info');
+        }
+        
+        function stopTask() {
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'stop_task'
+                }));
+            }
+        }
+        
+        // 页面加载时连接 WebSocket
+        window.onload = () => {
+            connectWebSocket();
+        };
+    </script>
+</body>
+</html>
+
+
+
