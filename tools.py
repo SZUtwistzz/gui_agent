@@ -123,19 +123,41 @@ class Tools:
             )
     
     async def _click(self, selector: str) -> ActionResult:
-        """点击工具"""
+        """点击工具 - 支持智能选择器匹配"""
         try:
             await self.browser.click(selector)
             # 等待页面加载
-            await self.browser.page.wait_for_load_state("networkidle", timeout=5000)
-            return ActionResult(
-                success=True,
-                content=f"已点击元素: {selector}"
-            )
+            try:
+                await self.browser.page.wait_for_load_state("networkidle", timeout=5000)
+            except:
+                pass  # 超时也继续
+            
+            # 获取新页面信息
+            try:
+                new_url = await self.browser.get_url()
+                new_title = await self.browser.get_title()
+                return ActionResult(
+                    success=True,
+                    content=f"✅ 已点击元素: {selector}\n当前页面: {new_title}"
+                )
+            except:
+                return ActionResult(
+                    success=True,
+                    content=f"✅ 已点击元素: {selector}"
+                )
         except Exception as e:
+            # 提供更有帮助的错误信息
+            error_msg = str(e)
+            suggestion = ""
+            
+            if "Timeout" in error_msg:
+                suggestion = "\n💡 建议: 元素可能不存在或不可见。请使用 get_elements() 查看当前页面的可交互元素列表，然后使用列表中提供的 selector。"
+            elif "not found" in error_msg.lower():
+                suggestion = "\n💡 建议: 请先调用 get_elements() 获取页面元素，使用返回的 selector 字段进行点击。"
+            
             return ActionResult(
                 success=False,
-                error=f"点击失败: {e}"
+                error=f"点击失败: {error_msg}{suggestion}"
             )
     
     async def _input(self, selector: str, text: str) -> ActionResult:

@@ -303,18 +303,110 @@ class Browser:
             return b""
         return await self.page.screenshot()
     
-    async def click(self, selector: str):
-        """点击元素"""
+    async def click(self, selector: str, timeout: int = 10000):
+        """
+        点击元素 - 支持多种选择器格式和智能匹配
+        
+        Args:
+            selector: CSS 选择器、XPath、文本匹配或 data-agent-idx
+            timeout: 超时时间（毫秒）
+        """
         await self.start()
-        await self.page.click(selector)
-        await asyncio.sleep(0.5)  # 等待页面响应
-        logger.info(f"已点击: {selector}")
+        
+        # 尝试多种选择器策略
+        strategies = []
+        
+        # 1. 如果是 data-agent-idx 格式
+        if selector.startswith("[data-agent-idx"):
+            strategies.append(selector)
+        
+        # 2. 原始选择器
+        strategies.append(selector)
+        
+        # 3. 如果看起来像文本，尝试文本匹配
+        if not selector.startswith(("#", ".", "[", "/", "xpath=")) and len(selector) > 2:
+            # 尝试按文本匹配按钮和链接
+            strategies.append(f'button:has-text("{selector}")')
+            strategies.append(f'a:has-text("{selector}")')
+            strategies.append(f'text="{selector}"')
+            strategies.append(f'*:has-text("{selector}")')
+        
+        # 4. 如果是简单的 ID 选择器但没找到，尝试包含匹配
+        if selector.startswith("#") and "_" in selector:
+            # 例如 #choose_cpu -> [id*="cpu"], [class*="cpu"]
+            keyword = selector.split("_")[-1]
+            strategies.append(f'[id*="{keyword}"]')
+            strategies.append(f'[class*="{keyword}"]')
+            strategies.append(f'button:has-text("{keyword}")')
+            strategies.append(f'a:has-text("{keyword}")')
+        
+        # 5. XPath 选择器
+        if selector.startswith("//") or selector.startswith("xpath="):
+            xpath = selector.replace("xpath=", "")
+            strategies.insert(0, f'xpath={xpath}')
+        
+        last_error = None
+        for strategy in strategies:
+            try:
+                # 先检查元素是否存在
+                element = await self.page.wait_for_selector(strategy, timeout=timeout, state="visible")
+                if element:
+                    await element.click()
+                    await asyncio.sleep(0.5)
+                    logger.info(f"✅ 点击成功: {strategy}")
+                    return
+            except Exception as e:
+                last_error = e
+                logger.debug(f"选择器 '{strategy}' 失败: {e}")
+                continue
+        
+        # 所有策略都失败，抛出最后的错误
+        raise Exception(f"点击失败: 尝试了 {len(strategies)} 种选择器策略都未找到元素。原始选择器: {selector}。错误: {last_error}")
     
-    async def fill(self, selector: str, text: str):
-        """填充输入框"""
+    async def fill(self, selector: str, text: str, timeout: int = 10000):
+        """
+        填充输入框 - 支持多种选择器格式
+        
+        Args:
+            selector: CSS 选择器、XPath 或其他
+            text: 要填充的文本
+            timeout: 超时时间（毫秒）
+        """
         await self.start()
-        await self.page.fill(selector, text)
-        logger.info(f"已填充 {selector}: {text[:50]}...")
+        
+        strategies = [selector]
+        
+        # 如果是简单选择器，添加备选策略
+        if selector.startswith("#") or selector.startswith("."):
+            keyword = selector.lstrip("#.")
+            strategies.extend([
+                f'input[name*="{keyword}"]',
+                f'input[placeholder*="{keyword}"]',
+                f'textarea[name*="{keyword}"]',
+                f'[id*="{keyword}"]',
+            ])
+        
+        # 如果看起来像文本描述
+        if not selector.startswith(("#", ".", "[", "/")):
+            strategies.extend([
+                f'input[placeholder*="{selector}"]',
+                f'input[name*="{selector}"]',
+                f'textarea[placeholder*="{selector}"]',
+            ])
+        
+        last_error = None
+        for strategy in strategies:
+            try:
+                element = await self.page.wait_for_selector(strategy, timeout=timeout, state="visible")
+                if element:
+                    await element.fill(text)
+                    logger.info(f"✅ 已填充 {strategy}: {text[:30]}...")
+                    return
+            except Exception as e:
+                last_error = e
+                continue
+        
+        raise Exception(f"填充失败: 未找到输入框。选择器: {selector}。错误: {last_error}")
     
     async def evaluate(self, script: str) -> Any:
         """执行 JavaScript"""
