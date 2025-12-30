@@ -414,12 +414,12 @@ class Agent:
 1. **禁止猜测选择器**：不要使用 #search_box、#submit 等猜测的选择器
 2. **必须使用实际选择器**：使用每次操作后返回的元素列表中的 selector 字段
 3. **点击前先获取元素**：如果不确定，先调用 get_elements() 查看可用元素
-4. **使用文本点击**：可以直接使用按钮/链接的文本内容，如 "Choose A CPU"
+4. **使用文本点击**：可以直接使用按钮/链接的文本内容
 
-正确示例：
-- ✅ `{"action": "click", "params": {"selector": "a:has-text(\\"Choose A CPU\\")"}}` 
-- ✅ `{"action": "click", "params": {"selector": "#pcpp-partlist-cpu"}}`（来自元素列表）
-- ❌ `{"action": "click", "params": {"selector": "#search_box"}}`（猜测的，可能不存在）
+正确的点击方式：
+- ✅ 使用元素列表返回的 selector 字段
+- ✅ 使用文本匹配，如 text="Choose A CPU" 或 button:text("Add")  
+- ❌ 不要猜测如 #search_box、#submit_btn 等不存在的选择器
 
 ### ⚠️ 任务完成规则（极其重要！）
 1. **只有当任务的所有目标都已达成时，才能调用 done() 工具**
