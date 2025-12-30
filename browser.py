@@ -748,6 +748,8 @@ class Browser:
             
             // 获取元素的最佳选择器
             function getBestSelector(el, index) {
+                const tag = el.tagName.toLowerCase();
+                
                 // 优先使用 ID
                 if (el.id) {
                     return `#${el.id}`;
@@ -761,24 +763,47 @@ class Browser:
                     return `[data-id="${el.dataset.id}"]`;
                 }
                 
+                // 使用 name 属性
+                if (el.name) {
+                    return `[name="${el.name}"]`;
+                }
+                
                 // 使用唯一的 class 组合
                 if (el.className && typeof el.className === 'string') {
-                    const classes = el.className.trim().split(/\\s+/).slice(0, 2).join('.');
+                    const classes = el.className.trim().split(/\\s+/).filter(c => c && !c.match(/^(js-|is-|has-)/)).slice(0, 2).join('.');
                     if (classes) {
-                        const selector = el.tagName.toLowerCase() + '.' + classes;
+                        const selector = tag + '.' + classes;
                         if (document.querySelectorAll(selector).length === 1) {
                             return selector;
                         }
                     }
                 }
                 
-                // 使用 name 属性
-                if (el.name) {
-                    return `[name="${el.name}"]`;
+                // 🔑 使用文本内容（最稳定的选择器）
+                const text = (el.textContent || '').trim().substring(0, 30);
+                if (text && text.length > 2) {
+                    // 清理文本，移除特殊字符
+                    const cleanText = text.replace(/[\"'\\n\\r\\t]/g, '').trim();
+                    if (cleanText.length > 2) {
+                        return `${tag}:has-text("${cleanText}")`;
+                    }
                 }
                 
-                // 最后使用索引标记
-                return `[data-agent-idx="${index}"]`;
+                // 使用 href 属性（链接）
+                if (el.href && tag === 'a') {
+                    const href = el.getAttribute('href');
+                    if (href && !href.startsWith('javascript:') && href.length < 50) {
+                        return `a[href="${href}"]`;
+                    }
+                }
+                
+                // 使用 placeholder（输入框）
+                if (el.placeholder) {
+                    return `${tag}[placeholder="${el.placeholder}"]`;
+                }
+                
+                // 最后使用标签+索引（尽量避免）
+                return `${tag}:nth-of-type(${index + 1})`;
             }
             
             // 提取元素的简洁描述
