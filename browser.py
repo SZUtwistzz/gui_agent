@@ -303,7 +303,7 @@ class Browser:
             return b""
         return await self.page.screenshot()
     
-    async def click(self, selector: str, timeout: int = 10000):
+    async def click(self, selector: str, timeout: int = 8000):
         """
         点击元素 - 支持多种选择器格式和智能匹配
         
@@ -312,6 +312,9 @@ class Browser:
             timeout: 超时时间（毫秒）
         """
         await self.start()
+        
+        # 清理选择器
+        selector = selector.strip()
         
         # 尝试多种选择器策略
         strategies = []
@@ -323,34 +326,100 @@ class Browser:
         # 2. 原始选择器
         strategies.append(selector)
         
-        # 3. 如果看起来像文本，尝试文本匹配
-        if not selector.startswith(("#", ".", "[", "/", "xpath=")) and len(selector) > 2:
+        # 3. 如果看起来像文本（不是选择器语法），尝试文本匹配
+        selector_lower = selector.lower()
+        is_text_like = not selector.startswith(("#", ".", "[", "/", "xpath=")) and len(selector) > 2
+        
+        if is_text_like:
             # 尝试按文本匹配按钮和链接
-            strategies.append(f'button:has-text("{selector}")')
-            strategies.append(f'a:has-text("{selector}")')
-            strategies.append(f'text="{selector}"')
-            strategies.append(f'*:has-text("{selector}")')
+            strategies.extend([
+                f'button:has-text("{selector}")',
+                f'a:has-text("{selector}")',
+                f'text="{selector}"',
+                f'[role="button"]:has-text("{selector}")',
+            ])
         
-        # 4. 如果是简单的 ID 选择器但没找到，尝试包含匹配
-        if selector.startswith("#") and "_" in selector:
-            # 例如 #choose_cpu -> [id*="cpu"], [class*="cpu"]
-            keyword = selector.split("_")[-1]
-            strategies.append(f'[id*="{keyword}"]')
-            strategies.append(f'[class*="{keyword}"]')
-            strategies.append(f'button:has-text("{keyword}")')
-            strategies.append(f'a:has-text("{keyword}")')
+        # 4. PCPartPicker 特殊处理
+        current_url = self.page.url.lower() if self.page else ""
+        is_pcpartpicker = "pcpartpicker" in current_url
         
-        # 5. XPath 选择器
+        if is_pcpartpicker:
+            # PCPartPicker 配件选择按钮的常见模式
+            part_keywords = {
+                "cpu": ["Choose A CPU", "cpu", "processor"],
+                "cooler": ["Choose A CPU Cooler", "cooler", "cooling"],
+                "motherboard": ["Choose A Motherboard", "motherboard", "mobo"],
+                "memory": ["Choose Memory", "memory", "ram"],
+                "storage": ["Choose Storage", "storage", "ssd", "hdd"],
+                "video": ["Choose A Video Card", "video card", "gpu", "graphics"],
+                "case": ["Choose A Case", "case", "chassis"],
+                "power": ["Choose A Power Supply", "power supply", "psu"],
+            }
+            
+            for key, keywords in part_keywords.items():
+                if any(kw in selector_lower for kw in keywords):
+                    for kw in keywords:
+                        strategies.extend([
+                            f'a:has-text("{kw}")',
+                            f'button:has-text("{kw}")',
+                            f'td a:has-text("{kw}")',
+                            f'.td__component a:has-text("Choose")',
+                        ])
+                    break
+            
+            # PCPartPicker 的 Add 按钮
+            if "add" in selector_lower:
+                strategies.extend([
+                    'button:has-text("Add")',
+                    '.button--add',
+                    '[class*="add"]',
+                    'button.btn-primary',
+                ])
+        
+        # 5. 如果是简单的 ID 选择器但没找到，尝试包含匹配
+        if selector.startswith("#"):
+            id_name = selector[1:]
+            if "_" in id_name:
+                keyword = id_name.split("_")[-1]
+            else:
+                keyword = id_name
+            strategies.extend([
+                f'[id*="{keyword}" i]',
+                f'[class*="{keyword}" i]',
+                f'button:has-text("{keyword}")',
+                f'a:has-text("{keyword}")',
+            ])
+        
+        # 6. XPath 选择器
         if selector.startswith("//") or selector.startswith("xpath="):
             xpath = selector.replace("xpath=", "")
             strategies.insert(0, f'xpath={xpath}')
         
+        # 7. 通用文本搜索（最后的尝试）
+        if is_text_like:
+            # 提取可能的关键词
+            words = selector.replace("_", " ").replace("-", " ").split()
+            for word in words:
+                if len(word) > 2:
+                    strategies.append(f'*:has-text("{word}")')
+        
+        # 去重
+        seen = set()
+        unique_strategies = []
+        for s in strategies:
+            if s not in seen:
+                seen.add(s)
+                unique_strategies.append(s)
+        
         last_error = None
-        for strategy in strategies:
+        for strategy in unique_strategies:
             try:
                 # 先检查元素是否存在
                 element = await self.page.wait_for_selector(strategy, timeout=timeout, state="visible")
                 if element:
+                    # 滚动到元素位置
+                    await element.scroll_into_view_if_needed()
+                    await asyncio.sleep(0.2)
                     await element.click()
                     await asyncio.sleep(0.5)
                     logger.info(f"✅ 点击成功: {strategy}")
@@ -360,8 +429,57 @@ class Browser:
                 logger.debug(f"选择器 '{strategy}' 失败: {e}")
                 continue
         
-        # 所有策略都失败，抛出最后的错误
-        raise Exception(f"点击失败: 尝试了 {len(strategies)} 种选择器策略都未找到元素。原始选择器: {selector}。错误: {last_error}")
+        # 所有策略都失败，尝试使用 JavaScript 点击
+        try:
+            clicked = await self._js_click_fallback(selector)
+            if clicked:
+                return
+        except Exception as e:
+            logger.debug(f"JS 点击也失败: {e}")
+        
+        # 抛出错误
+        raise Exception(f"点击失败: 尝试了 {len(unique_strategies)} 种选择器都未找到元素。原始: {selector}")
+    
+    async def _js_click_fallback(self, selector: str) -> bool:
+        """使用 JavaScript 作为点击的后备方案"""
+        selector_lower = selector.lower()
+        
+        # 尝试通过文本内容查找并点击
+        script = """
+        (searchText) => {
+            const searchLower = searchText.toLowerCase();
+            
+            // 查找包含文本的可点击元素
+            const clickables = document.querySelectorAll('a, button, [role="button"], [onclick]');
+            
+            for (const el of clickables) {
+                const text = (el.textContent || '').toLowerCase();
+                const id = (el.id || '').toLowerCase();
+                const className = (el.className || '').toLowerCase();
+                
+                if (text.includes(searchLower) || id.includes(searchLower) || className.includes(searchLower)) {
+                    el.scrollIntoView({ behavior: 'instant', block: 'center' });
+                    el.click();
+                    return true;
+                }
+            }
+            return false;
+        }
+        """
+        
+        # 提取搜索关键词
+        search_text = selector.lstrip("#.").replace("_", " ").replace("-", " ")
+        
+        try:
+            result = await self.page.evaluate(script, search_text)
+            if result:
+                await asyncio.sleep(0.5)
+                logger.info(f"✅ JS 点击成功: {search_text}")
+                return True
+        except Exception as e:
+            logger.debug(f"JS 点击失败: {e}")
+        
+        return False
     
     async def fill(self, selector: str, text: str, timeout: int = 10000):
         """

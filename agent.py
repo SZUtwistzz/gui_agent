@@ -103,15 +103,29 @@ class Agent:
                 logger.info(f"LLM 响应: {response[:200]}...")
                 
                 # 解析 LLM 响应，提取 JSON 格式的操作
-                action = self._parse_action(response)
+                action, rejected_done = self._parse_action_with_status(response)
                 
                 if not action:
-                    # 如果无法解析，尝试让 LLM 重新生成
                     messages.append(Message(role="assistant", content=response))
-                    messages.append(Message(
-                        role="user",
-                        content="请以 JSON 格式返回操作，格式: {\"action\": \"工具名\", \"params\": {...}}"
-                    ))
+                    
+                    if rejected_done:
+                        # done 操作被拒绝，任务未完成
+                        remaining_parts = self._get_remaining_parts()
+                        messages.append(Message(
+                            role="user",
+                            content=f"""🚫 done 操作被拒绝！任务尚未完成！
+
+{remaining_parts}
+
+请继续选择下一个配件，不要调用 done()！
+使用 get_elements() 查看当前页面的可点击元素，然后点击对应的配件类别。"""
+                        ))
+                    else:
+                        # 无法解析 JSON
+                        messages.append(Message(
+                            role="user",
+                            content="请以 JSON 格式返回操作，格式: {\"action\": \"工具名\", \"params\": {...}}"
+                        ))
                     continue
                 
                 # 记录操作
@@ -479,7 +493,12 @@ class Agent:
                 action = json.loads(code_block_match.group(1))
                 if "action" in action:
                     logger.info(f"从代码块解析到操作: {action}")
-                    return self._validate_done_action(action, response)
+                    validated = self._validate_done_action(action, response)
+                    if validated is None:
+                        # done 操作被拒绝，返回 None 触发重新提示
+                        logger.warning("done 操作被拒绝，任务尚未完成")
+                        return None
+                    return validated
             except json.JSONDecodeError:
                 pass
         
@@ -508,26 +527,106 @@ class Agent:
                         action = json.loads(json_str)
                         if "action" in action:
                             logger.info(f"解析到操作: {action}")
-                            return self._validate_done_action(action, response)
+                            validated = self._validate_done_action(action, response)
+                            if validated is None:
+                                # done 操作被拒绝
+                                logger.warning("done 操作被拒绝，任务尚未完成")
+                                return None
+                            return validated
                     except json.JSONDecodeError as e:
                         logger.warning(f"JSON 解析失败: {e}, 字符串: {json_str[:100]}")
         
         # 方法3：检查是否是明确的任务完成声明
         # 必须同时满足: 明确表示任务完成 + 包含结果总结
         if self._is_explicit_task_completion(response):
-            logger.info("检测到明确的任务完成声明")
-            return {
+            # 对于 PC 配置任务，也需要验证
+            done_action = {
                 "action": "done",
                 "params": {"result": response}
             }
+            validated = self._validate_done_action(done_action, response)
+            if validated is None:
+                logger.warning("隐式 done 操作被拒绝，任务尚未完成")
+                return None
+            logger.info("检测到明确的任务完成声明")
+            return validated
         
         logger.warning(f"无法从响应中解析操作: {response[:200]}")
         return None
     
-    def _validate_done_action(self, action: Dict[str, Any], response: str) -> Dict[str, Any]:
-        """验证 done 操作是否合理"""
+    def _parse_action_with_status(self, response: str) -> tuple:
+        """
+        解析操作并返回状态
+        
+        Returns:
+            (action, rejected_done): action 是解析的操作，rejected_done 表示是否是被拒绝的 done
+        """
+        # 标记是否遇到被拒绝的 done
+        self._last_done_rejected = False
+        
+        action = self._parse_action(response)
+        
+        # 检查是否是 done 被拒绝的情况
+        if action is None:
+            # 检查响应中是否包含 done 操作
+            if '"action"' in response and '"done"' in response:
+                # 可能是 done 被拒绝了
+                task_lower = self.task.lower()
+                is_pc_task = any(keyword in task_lower for keyword in [
+                    "配置", "电脑", "pc", "computer", "build", "配件", "pcpartpicker"
+                ])
+                if is_pc_task and len(self.selected_parts) < 6:
+                    return (None, True)  # done 被拒绝
+        
+        return (action, False)
+    
+    def _get_remaining_parts(self) -> str:
+        """获取剩余未选择的配件信息"""
+        all_parts = ["CPU", "CPU Cooler", "Motherboard", "Memory", "Storage", "Video Card", "Case", "Power Supply"]
+        remaining = [p for p in all_parts if p not in self.selected_parts]
+        selected_count = len(self.selected_parts)
+        
+        lines = [f"📊 当前进度: 已选 {selected_count}/8 个配件"]
+        
+        if self.selected_parts:
+            lines.append("\n✅ 已选配件:")
+            for part_type, info in self.selected_parts.items():
+                lines.append(f"   - {part_type}: {info.get('name', '已选择')}")
+        
+        if remaining:
+            lines.append(f"\n⏳ 待选配件 ({len(remaining)} 个):")
+            for part in remaining:
+                lines.append(f"   - {part}")
+        
+        return "\n".join(lines)
+    
+    def _validate_done_action(self, action: Dict[str, Any], response: str) -> Optional[Dict[str, Any]]:
+        """
+        验证 done 操作是否合理
+        
+        对于 PC 配置任务，如果配件未选完则拒绝 done 操作
+        返回 None 表示拒绝该操作，让 Agent 继续执行
+        """
         if action.get("action") != "done":
             return action
+        
+        # 🔴 关键检查：PC 配置任务的配件完成度
+        task_lower = self.task.lower()
+        is_pc_task = any(keyword in task_lower for keyword in [
+            "配置", "电脑", "pc", "computer", "build", "配件", "pcpartpicker"
+        ])
+        
+        if is_pc_task:
+            all_parts = ["CPU", "CPU Cooler", "Motherboard", "Memory", "Storage", "Video Card", "Case", "Power Supply"]
+            selected_count = len(self.selected_parts)
+            
+            # 如果选择的配件少于 6 个（允许一些可选配件），拒绝 done
+            if selected_count < 6:
+                remaining = [p for p in all_parts if p not in self.selected_parts]
+                logger.warning(f"🚫 拒绝 done 操作！只选了 {selected_count} 个配件，还需要选择: {remaining}")
+                
+                # 返回 None，触发重新提示
+                return None
         
         # 检查是否有明确的完成信号
         result = action.get("params", {}).get("result", "")
@@ -553,7 +652,6 @@ class Agent:
         # 如果既没有完成信号也没有结果描述，可能是误判
         if not has_completion_signal and not has_result:
             logger.warning(f"done 操作缺少明确的完成信号或结果描述，可能是误判")
-            # 但仍然返回，因为 LLM 明确调用了 done
         
         return action
     
