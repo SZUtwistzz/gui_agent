@@ -93,7 +93,7 @@ class Tools:
             )
     
     async def _navigate(self, url: str) -> ActionResult:
-        """导航工具"""
+        """导航工具 - 自动返回页面元素"""
         try:
             await self.browser.navigate(url)
             # 检查是否遇到了人机验证
@@ -111,9 +111,27 @@ class Tools:
                     content=f"已导航到 {url}，但检测到可能存在人机验证。建议调用 wait_for_user() 等待用户完成验证。"
                 )
             
+            # 自动获取页面元素，方便后续操作
+            elements_info = ""
+            try:
+                dom_info = await self.browser.get_pruned_dom(max_elements=25)
+                elements = dom_info.get("elements", [])
+                if elements:
+                    lines = ["\n\n📋 页面可交互元素（请使用这些 selector 进行点击）:"]
+                    for el in elements[:20]:
+                        idx = el.get("idx", "?")
+                        tag = el.get("tag", "")
+                        text = el.get("text", "")[:35]
+                        sel = el.get("selector", "")
+                        if text:
+                            lines.append(f"  [{idx}] <{tag}> \"{text}\" → selector: {sel}")
+                    elements_info = "\n".join(lines)
+            except:
+                pass
+            
             return ActionResult(
                 success=True,
-                content=f"已导航到 {url}，页面标题: {title}"
+                content=f"✅ 已导航到 {url}\n页面标题: {title}{elements_info}"
             )
         except Exception as e:
             logger.error(f"导航到 {url} 失败: {e}")
@@ -146,32 +164,65 @@ class Tools:
                     content=f"✅ 已点击元素: {selector}"
                 )
         except Exception as e:
-            # 提供更有帮助的错误信息
+            # 点击失败，自动获取可用元素帮助 LLM
             error_msg = str(e)
-            suggestion = ""
             
-            if "Timeout" in error_msg:
-                suggestion = "\n💡 建议: 元素可能不存在或不可见。请使用 get_elements() 查看当前页面的可交互元素列表，然后使用列表中提供的 selector。"
-            elif "not found" in error_msg.lower():
-                suggestion = "\n💡 建议: 请先调用 get_elements() 获取页面元素，使用返回的 selector 字段进行点击。"
+            # 尝试获取页面上的可用元素
+            available_elements = ""
+            try:
+                dom_info = await self.browser.get_pruned_dom(max_elements=20)
+                elements = dom_info.get("elements", [])
+                if elements:
+                    lines = ["\n\n📋 当前页面可用元素（请使用这些 selector）:"]
+                    for el in elements[:15]:  # 只显示前15个
+                        idx = el.get("idx", "?")
+                        tag = el.get("tag", "")
+                        text = el.get("text", "")[:30]
+                        sel = el.get("selector", "")
+                        if text:
+                            lines.append(f"  [{idx}] <{tag}> \"{text}\" → {sel}")
+                        else:
+                            lines.append(f"  [{idx}] <{tag}> → {sel}")
+                    available_elements = "\n".join(lines)
+            except:
+                pass
             
             return ActionResult(
                 success=False,
-                error=f"点击失败: {error_msg}{suggestion}"
+                error=f"点击失败: 选择器 '{selector}' 未找到元素。{available_elements}\n\n💡 请使用上面列表中的 selector 进行点击！"
             )
     
     async def _input(self, selector: str, text: str) -> ActionResult:
-        """输入工具"""
+        """输入工具 - 失败时返回可用输入框"""
         try:
             await self.browser.fill(selector, text)
             return ActionResult(
                 success=True,
-                content=f"已在 {selector} 输入文本"
+                content=f"✅ 已在 {selector} 输入: {text[:30]}..."
             )
         except Exception as e:
+            # 获取页面上的输入框
+            input_elements = ""
+            try:
+                dom_info = await self.browser.get_pruned_dom(max_elements=30)
+                elements = dom_info.get("elements", [])
+                inputs = [el for el in elements if el.get("tag") in ["input", "textarea"]]
+                if inputs:
+                    lines = ["\n\n📝 页面可用输入框:"]
+                    for el in inputs[:10]:
+                        idx = el.get("idx", "?")
+                        placeholder = el.get("placeholder", "")
+                        name = el.get("name", "")
+                        sel = el.get("selector", "")
+                        desc = placeholder or name or "无描述"
+                        lines.append(f"  [{idx}] {desc} → selector: {sel}")
+                    input_elements = "\n".join(lines)
+            except:
+                pass
+            
             return ActionResult(
                 success=False,
-                error=f"输入失败: {e}"
+                error=f"输入失败: 选择器 '{selector}' 未找到。{input_elements}\n\n💡 请使用上面列表中的 selector！"
             )
     
     async def _extract(self, query: str) -> ActionResult:

@@ -408,7 +408,18 @@ class Agent:
 1. 每次响应必须返回一个 JSON 格式的操作
 2. **浏览器启动时是空白页（about:blank），你必须首先使用 navigate() 导航到目标网站！**
 3. 如果操作失败，尝试其他方法
-4. 优先使用元素列表中提供的 selector，如果不行再尝试其他选择器
+4. **🚨 点击/输入时必须使用元素列表中提供的 selector，不要猜测选择器！**
+
+### 🔴 选择器使用规则（非常重要！）
+1. **禁止猜测选择器**：不要使用 #search_box、#submit 等猜测的选择器
+2. **必须使用实际选择器**：使用每次操作后返回的元素列表中的 selector 字段
+3. **点击前先获取元素**：如果不确定，先调用 get_elements() 查看可用元素
+4. **使用文本点击**：可以直接使用按钮/链接的文本内容，如 "Choose A CPU"
+
+正确示例：
+- ✅ `{"action": "click", "params": {"selector": "a:has-text(\\"Choose A CPU\\")"}}` 
+- ✅ `{"action": "click", "params": {"selector": "#pcpp-partlist-cpu"}}`（来自元素列表）
+- ❌ `{"action": "click", "params": {"selector": "#search_box"}}`（猜测的，可能不存在）
 
 ### ⚠️ 任务完成规则（极其重要！）
 1. **只有当任务的所有目标都已达成时，才能调用 done() 工具**
